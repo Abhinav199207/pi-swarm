@@ -15,7 +15,9 @@ import { BridgeLeaseManager } from "./bridge-lease.js";
 import { LeaseRepository } from "../persistence/repositories/lease-repository.js";
 import type { TelegramClient, TelegramUpdate } from "./telegram-client.js";
 import { isTelegramApiError } from "./http-telegram-client.js";
-import { buildStatusReply, interceptControlCommand, normalizeTelegramUpdate } from "./telegram-normalizer.js";
+import { buildStatusReply, formatVoiceTranscript, interceptControlCommand, normalizeTelegramUpdate } from "./telegram-normalizer.js";
+import { transcribeWithParakeet } from "../audio/gx10-audio.js";
+import type { TelegramInboundBody } from "../domain/messages.js";
 import { getLogger } from "../observability/logger.js";
 
 export class TelegramPoller {
@@ -88,14 +90,100 @@ export class TelegramPoller {
       }
 
       for (const update of updates) {
-        lastCommitted = await this.processUpdateTransactionally(update, lastCommitted);
+        lastCommitted = await this.processUpdate(update, lastCommitted);
       }
     }
 
     await this.lease.release(this.bridge.id);
   }
 
-  private async processUpdateTransactionally(update: TelegramUpdate, lastCommitted: number | null): Promise<number | null> {
+  private async processUpdate(update: TelegramUpdate, lastCommitted: number | null): Promise<number | null> {
+    const normalized = normalizeTelegramUpdate(this.bridge.id, update);
+    if (!normalized) {
+      return this.processUpdateTransactionally(update, lastCommitted, null);
+    }
+
+    const authorized = authorizeTelegramUser({
+      allowedUserIds: this.bridge.allowedUserIds,
+      allowedChatIds: this.bridge.allowedChatIds,
+      allowGroupChats: this.bridge.allowGroupChats,
+      userId: normalized.userId,
+      chatId: normalized.chatId,
+      chatType: normalized.chatType,
+    });
+
+    if (!authorized) {
+      return this.processUpdateTransactionally(update, lastCommitted, normalized, { denied: true });
+    }
+
+    let enriched = normalized;
+    if (
+      this.config.telegramAudioEnabled &&
+      enriched.inputModality === "voice" &&
+      enriched.voiceFileId
+    ) {
+      try {
+        enriched = await this.transcribeVoiceInbound(enriched);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (enriched.telegramMessageId != null) {
+          await this.client.sendMessage({
+            chatId: enriched.chatId,
+            text: `Could not transcribe voice message (gx10 Parakeet): ${message.slice(0, 300)}`,
+            replyToMessageId: enriched.telegramMessageId,
+          });
+        }
+        return this.processUpdateTransactionally(update, lastCommitted, null);
+      }
+    }
+
+    if (!enriched.text?.trim()) {
+      return this.processUpdateTransactionally(update, lastCommitted, null);
+    }
+
+    const control = interceptControlCommand(enriched.text);
+    if (control === "status") {
+      enriched = {
+        ...enriched,
+        text: buildStatusReply({
+          personaSlug: this.persona.slug,
+          bridgeStatus: this.bridge.status,
+          personaStatus: this.persona.status,
+        }),
+      };
+    } else if (control === "help") {
+      enriched = {
+        ...enriched,
+        text: "Supported commands: /status, /help, /cancel <traceId>. Send a voice note to talk via gx10 audio.",
+      };
+    }
+
+    return this.processUpdateTransactionally(update, lastCommitted, enriched);
+  }
+
+  private async transcribeVoiceInbound(body: TelegramInboundBody): Promise<TelegramInboundBody> {
+    if (!body.voiceFileId) {
+      throw new Error("voice file id missing");
+    }
+    const { buffer, filename } = await this.client.downloadFile(body.voiceFileId);
+    const transcript = await transcribeWithParakeet(buffer, filename, {
+      aiStackUrl: this.config.aiStackUrl,
+      sttTimeoutMs: this.config.gx10SttTimeoutMs,
+      ttsTimeoutMs: this.config.gx10TtsTimeoutMs,
+    });
+    return {
+      ...body,
+      text: formatVoiceTranscript(transcript, body.caption),
+      inputModality: "voice",
+    };
+  }
+
+  private async processUpdateTransactionally(
+    update: TelegramUpdate,
+    lastCommitted: number | null,
+    normalized: TelegramInboundBody | null,
+    options?: { denied?: boolean },
+  ): Promise<number | null> {
     const db = getDb();
     return db.transaction(async (tx) => {
       const bridges = new BridgeRepository(tx);
@@ -113,8 +201,8 @@ export class TelegramPoller {
         return update.update_id;
       }
 
-      const normalized = normalizeTelegramUpdate(this.bridge.id, update);
-      if (!normalized) {
+      const normalizedBody = normalized;
+      if (!normalizedBody) {
         await bridges.updateLastCommittedUpdateId(this.bridge.id, update.update_id);
         await audit.record({
           bridgeId: this.bridge.id,
@@ -126,36 +214,20 @@ export class TelegramPoller {
         return update.update_id;
       }
 
-      const authorized = authorizeTelegramUser({
-        allowedUserIds: this.bridge.allowedUserIds,
-        allowedChatIds: this.bridge.allowedChatIds,
-        allowGroupChats: this.bridge.allowGroupChats,
-        userId: normalized.userId,
-        chatId: normalized.chatId,
-        chatType: normalized.chatType,
-      });
-
-      if (!authorized) {
+      if (options?.denied) {
         await bridges.updateLastCommittedUpdateId(this.bridge.id, update.update_id);
         await audit.record({
           bridgeId: this.bridge.id,
           personaId: this.persona.id,
           eventType: "telegram.inbound_denied",
           actor: "telegram-poller",
-          payload: { updateId: update.update_id, userId: normalized.userId, chatId: normalized.chatId },
+          payload: {
+            updateId: update.update_id,
+            userId: normalizedBody.userId,
+            chatId: normalizedBody.chatId,
+          },
         });
         return update.update_id;
-      }
-
-      const control = interceptControlCommand(normalized.text);
-      if (control === "status") {
-        normalized.text = buildStatusReply({
-          personaSlug: this.persona.slug,
-          bridgeStatus: this.bridge.status,
-          personaStatus: this.persona.status,
-        });
-      } else if (control === "help") {
-        normalized.text = "Supported commands: /status, /help, /cancel <traceId>";
       }
 
       const traceId = randomUUID();
@@ -165,7 +237,7 @@ export class TelegramPoller {
         from: `telegram:${this.bridge.id}`,
         to: `persona:${this.persona.slug}`,
         kind: "telegram.inbound",
-        body: normalized,
+        body: normalizedBody,
         idempotencyKey,
       });
 

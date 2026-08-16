@@ -65,21 +65,6 @@ export class PersonaSupervisor {
     const inboxController = new AbortController();
     const worker = this.workerFactory(persona);
 
-    const inboxWorker = new InboxWorker(bus, persona, async (message: AgentMessage) => {
-      await this.dispatchInboxMessage(persona, bridge, bus, message);
-    });
-    void inboxWorker.run(inboxController.signal).catch((err) => {
-      getLogger().error({ err, personaId }, "inbox worker stopped");
-    });
-
-    void worker.start({
-      persona,
-      signal: workerController.signal,
-      onEvent: async (event) => {
-        await this.handleWorkerEvent(persona, bridge, bus, event);
-      },
-    });
-
     let outboxController: AbortController | null = null;
     let pollerController: AbortController | null = null;
 
@@ -91,6 +76,21 @@ export class PersonaSupervisor {
       outboxController = controllers.outboxController;
       pollerController = controllers.pollerController;
     }
+
+    void worker.start({
+      persona,
+      signal: workerController.signal,
+      onEvent: async (event) => {
+        await this.handleWorkerEvent(persona, bridge, bus, event);
+      },
+    });
+
+    const inboxWorker = new InboxWorker(bus, persona, async (message: AgentMessage) => {
+      await this.dispatchInboxMessage(persona, bridge, bus, message);
+    });
+    void inboxWorker.run(inboxController.signal).catch((err) => {
+      getLogger().error({ err, personaId }, "inbox worker stopped");
+    });
 
     this.runtimes.set(personaId, {
       worker,
@@ -163,9 +163,12 @@ export class PersonaSupervisor {
 
       const runtime = this.runtimes.get(persona.id);
       const worker = runtime?.worker;
+      const emit = async (event: PersonaWorkerEvent) => {
+        await this.handleWorkerEvent(persona, bridge, bus, event, message.traceId, message.id);
+      };
       const events =
         worker?.handleInboxMessage != null
-          ? await worker.handleInboxMessage(persona, message)
+          ? await worker.handleInboxMessage(persona, message, emit)
           : processInboxMessage(persona, message);
       for (const event of events) {
         await this.handleWorkerEvent(persona, bridge, bus, event, message.traceId, message.id);
@@ -206,15 +209,21 @@ export class PersonaSupervisor {
         getLogger().warn({ slug: persona.slug }, "telegram.send ignored: no bridge");
         return;
       }
+      const progressKey =
+        typeof event.body.progressKey === "string" ? event.body.progressKey : undefined;
+      const reason = typeof event.body.reason === "string" ? event.body.reason : "reply";
+      const parentId = parentMessageId ?? null;
+
       await bus.enqueue({
         id: randomUUID(),
         traceId: traceId ?? randomUUID(),
-        parentMessageId: parentMessageId ?? null,
+        parentMessageId: parentId,
         from: `persona:${persona.slug}`,
         to: `bridge:${bridge.id}`,
         kind: "telegram.send",
         body: event.body,
-        idempotencyKey: parentMessageId ? `reply:${parentMessageId}` : randomUUID(),
+        idempotencyKey:
+          progressKey ?? (parentId && reason === "reply" ? `reply:${parentId}` : randomUUID()),
         expiresAt: null,
       });
     }
@@ -229,7 +238,7 @@ export class PersonaSupervisor {
     const token = await secrets.resolve(bridge.tokenSecretRef);
     const client = new HttpTelegramClient(token);
     this.bridgeClients.set(bridge.id, client);
-    const sender = new TelegramSender(bridge.id, client, persona.slug);
+    const sender = new TelegramSender(bridge.id, client, persona.slug, this.config);
 
     const outboxController = new AbortController();
     const outboxWorker = new OutboxWorker(bus, bridge, sender);

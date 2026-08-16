@@ -37,6 +37,9 @@ export const TelegramInboundBodySchema = z.object({
   replyToMessageId: z.number().int().nullable(),
   receivedAt: z.string().datetime(),
   rawArtifactRef: z.string().nullable(),
+  inputModality: z.enum(["text", "voice"]).default("text"),
+  voiceFileId: z.string().nullable().optional(),
+  caption: z.string().nullable().optional(),
 });
 
 export const TelegramSendBodySchema = z.object({
@@ -46,6 +49,7 @@ export const TelegramSendBodySchema = z.object({
   replyToMessageId: z.number().int().nullable(),
   parseMode: z.enum(["MarkdownV2", "HTML", "plain"]).default("plain"),
   reason: z.enum(["reply", "status", "approved_notification"]),
+  delivery: z.enum(["text", "voice"]).default("text"),
 });
 
 export type AgentMessageKind = z.infer<typeof AgentMessageKindSchema>;

@@ -1,8 +1,19 @@
+export interface TelegramVoiceAttachment {
+  file_id: string;
+  file_unique_id?: string;
+  duration?: number;
+  mime_type?: string;
+  file_size?: number;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: {
     message_id: number;
     text?: string;
+    caption?: string;
+    voice?: TelegramVoiceAttachment;
+    audio?: TelegramVoiceAttachment;
     chat: { id: number; type: string };
     from?: { id: number; username?: string };
     reply_to_message?: { message_id: number };
@@ -29,7 +40,15 @@ export interface TelegramClient {
     replyToMessageId?: number;
     parseMode?: "MarkdownV2" | "HTML";
   }): Promise<{ messageId: number }>;
-  sendChatAction(input: { chatId: string; action: "typing" }): Promise<void>;
+  sendVoice(input: {
+    chatId: string;
+    voice: Buffer;
+    filename: string;
+    replyToMessageId?: number;
+    caption?: string;
+  }): Promise<{ messageId: number }>;
+  downloadFile(fileId: string): Promise<{ buffer: Buffer; filename: string }>;
+  sendChatAction(input: { chatId: string; action: "typing" | "record_voice" }): Promise<void>;
 }
 
 export type TelegramErrorKind = "auth" | "rate_limit" | "conflict" | "transient" | "validation";

@@ -9,6 +9,13 @@ import { PiRpcClient } from "./pi-rpc-client.js";
 import type { MemoryRecallService } from "../control-plane/memory-recall-service.js";
 import type { MemoryCandidateService } from "../control-plane/memory-curation-service.js";
 import { CONCIERGE_MEMORY_EXTRA, MEMORY_RULES_BLOCK } from "../memory/memory-runtime.js";
+import { getLogger } from "../observability/logger.js";
+import {
+  createProgressFormatState,
+  formatPiRpcProgress,
+  isPriorityProgressEvent,
+  progressIdempotencyKey,
+} from "./pi-rpc-progress.js";
 
 export type PersonaWorkerEvent =
   | { type: "status"; message: string }
@@ -23,7 +30,11 @@ export interface PersonaWorker {
   }): Promise<void>;
   stop(): Promise<void>;
   isHealthy(): Promise<boolean>;
-  handleInboxMessage?(persona: Persona, message: AgentMessage): Promise<PersonaWorkerEvent[]>;
+  handleInboxMessage?(
+    persona: Persona,
+    message: AgentMessage,
+    emit?: (event: PersonaWorkerEvent) => Promise<void>,
+  ): Promise<PersonaWorkerEvent[]>;
 }
 
 export class FakePersonaWorker implements PersonaWorker {
@@ -94,21 +105,29 @@ export class PiRpcWorker implements PersonaWorker {
     return this.running && (this.client?.isRunning() ?? false);
   }
 
-  async handleInboxMessage(persona: Persona, message: AgentMessage): Promise<PersonaWorkerEvent[]> {
+  async handleInboxMessage(
+    persona: Persona,
+    message: AgentMessage,
+    emit?: (event: PersonaWorkerEvent) => Promise<void>,
+  ): Promise<PersonaWorkerEvent[]> {
     const result = await new Promise<PersonaWorkerEvent[]>((resolve, reject) => {
       this.processing = this.processing
-        .then(async () => resolve(await this.processMessage(persona, message)))
+        .then(async () => resolve(await this.processMessage(persona, message, emit)))
         .catch(reject);
     });
     return result;
   }
 
-  private async processMessage(persona: Persona, message: AgentMessage): Promise<PersonaWorkerEvent[]> {
+  private async processMessage(
+    persona: Persona,
+    message: AgentMessage,
+    emit?: (event: PersonaWorkerEvent) => Promise<void>,
+  ): Promise<PersonaWorkerEvent[]> {
     const commandEvents = processInboxCommands(persona, message);
     if (commandEvents.length > 0) return commandEvents;
 
     if (message.kind === "telegram.inbound") {
-      return this.handleTelegramInbound(persona, message);
+      return this.handleTelegramInbound(persona, message, emit);
     }
 
     if (message.kind === "agent.task") {
@@ -118,14 +137,18 @@ export class PiRpcWorker implements PersonaWorker {
         const recall = await this.memory.recall.recallForMessage({ persona, message });
         memoryContext = recall.renderedContext;
       }
-      const reply = await this.runPrompt(buildTaskPrompt(persona, task, memoryContext));
+      const reply = await this.runPrompt(buildTaskPrompt(persona, task, memoryContext), persona.slug);
       return [{ type: "agent.result", body: { task, reply } }];
     }
 
     return [{ type: "status", message: `${persona.slug} ignored ${message.kind}` }];
   }
 
-  private async handleTelegramInbound(persona: Persona, message: AgentMessage): Promise<PersonaWorkerEvent[]> {
+  private async handleTelegramInbound(
+    persona: Persona,
+    message: AgentMessage,
+    emit?: (event: PersonaWorkerEvent) => Promise<void>,
+  ): Promise<PersonaWorkerEvent[]> {
     const body = TelegramInboundBodySchema.parse(message.body);
     const text = body.text?.trim() ?? "";
     if (!text) {
@@ -158,7 +181,17 @@ export class PiRpcWorker implements PersonaWorker {
         }
       }
 
-      const reply = await this.runPrompt(buildTelegramPrompt(persona, text, memoryContext));
+      const reply = await this.runPrompt(
+        buildTelegramPrompt(persona, text, memoryContext, body.inputModality === "voice"),
+        persona.slug,
+        message,
+        body,
+        emit,
+      );
+      const voiceReply =
+        this.config.telegramAudioReplyEnabled &&
+        this.config.telegramAudioEnabled &&
+        body.inputModality === "voice";
       return [
         {
           type: "telegram.send",
@@ -169,10 +202,12 @@ export class PiRpcWorker implements PersonaWorker {
             replyToMessageId: body.telegramMessageId,
             parseMode: "plain",
             reason: "reply",
+            delivery: voiceReply ? "voice" : "text",
           },
         },
       ];
     } catch (err) {
+      await this.abortPromptIfRunning();
       const errorText = err instanceof Error ? err.message : String(err);
       return [
         {
@@ -190,11 +225,80 @@ export class PiRpcWorker implements PersonaWorker {
     }
   }
 
-  private async runPrompt(prompt: string): Promise<string> {
+  private async abortPromptIfRunning(): Promise<void> {
+    if (!this.client?.isRunning()) return;
+    try {
+      await this.client.abort();
+    } catch {
+      // Best effort — stale agent state is cleared on the next successful prompt.
+    }
+  }
+
+  private async runPrompt(
+    prompt: string,
+    personaSlug: string,
+    progressContext?: AgentMessage,
+    telegramBody?: { bridgeId: string; chatId: string; telegramMessageId: number | null },
+    emit?: (event: PersonaWorkerEvent) => Promise<void>,
+  ): Promise<string> {
     if (!this.client?.isRunning()) {
       throw new Error("Pi RPC worker is not running");
     }
-    return this.client.promptAndGetReply(prompt, this.config.piRpcTimeoutMs);
+
+    const startedAt = Date.now();
+    let lastProgressAt = 0;
+    let heartbeatTimer: NodeJS.Timeout | undefined;
+    const progressState = createProgressFormatState();
+    const log = getLogger();
+
+    const sendProgress = async (event: Record<string, unknown>) => {
+      if (!this.config.telegramProgressEnabled || !progressContext || !telegramBody || !emit) return;
+      const text = formatPiRpcProgress(event, progressState);
+      if (!text) return;
+      const now = Date.now();
+      const priority = isPriorityProgressEvent(event);
+      if (!priority && now - lastProgressAt < this.config.telegramProgressMinIntervalMs) return;
+      lastProgressAt = now;
+      const prefixed = `[${personaSlug}] ${text}`;
+      try {
+        await emit({
+          type: "telegram.send",
+          body: {
+            bridgeId: telegramBody.bridgeId,
+            chatId: telegramBody.chatId,
+            text: prefixed,
+            replyToMessageId: null,
+            parseMode: "plain",
+            reason: "status",
+            progressKey: progressIdempotencyKey(progressContext.id, event),
+          },
+        });
+      } catch (err) {
+        log.warn({ err, slug: personaSlug, eventType: event.type }, "telegram progress send failed");
+      }
+    };
+
+    const onProgress =
+      this.config.telegramProgressEnabled && progressContext && telegramBody && emit
+        ? async (event: Record<string, unknown>) => {
+            this.client?.bumpActivity();
+            await sendProgress(event);
+          }
+        : undefined;
+
+    if (onProgress) {
+      heartbeatTimer = setInterval(() => {
+        const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+        void this.client?.bumpActivity();
+        void sendProgress({ type: "heartbeat", elapsedSeconds });
+      }, this.config.telegramProgressHeartbeatMs);
+    }
+
+    try {
+      return await this.client.promptAndGetReply(prompt, this.config.piRpcTimeoutMs, onProgress);
+    } finally {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+    }
   }
 
   private buildPiArgs(persona: Persona): string[] {
@@ -241,14 +345,20 @@ export class PiRpcWorker implements PersonaWorker {
   }
 }
 
-function buildTelegramPrompt(persona: Persona, text: string, memoryContext: string): string {
+function buildTelegramPrompt(
+  persona: Persona,
+  text: string,
+  memoryContext: string,
+  fromVoice = false,
+): string {
   return [
     `You are ${persona.displayName} (${persona.slug}).`,
     persona.role,
     "",
     memoryContext ? `${memoryContext}\n` : "",
-    "The user sent this message via Telegram.",
-    "Reply directly to the user in plain text suitable for Telegram.",
+    fromVoice
+      ? "The user sent a voice note via Telegram (transcribed below). Reply in plain spoken language suitable for a voice note reply."
+      : "The user sent this message via Telegram.",
     "Keep the response concise unless they ask for detail.",
     "",
     `User message: ${text}`,

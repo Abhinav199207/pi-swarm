@@ -26,6 +26,14 @@ const ConfigSchema = z.object({
   maxTelegramMessageLength: z.coerce.number().int().positive().default(4096),
   telegramTypingEnabled: z.coerce.boolean().default(true),
   telegramTypingRefreshMs: z.coerce.number().int().min(1000).max(10000).default(4000),
+  telegramProgressEnabled: z.coerce.boolean().default(true),
+  telegramProgressMinIntervalMs: z.coerce.number().int().min(500).max(60000).default(2500),
+  telegramProgressHeartbeatMs: z.coerce.number().int().min(5000).max(120000).default(30000),
+  aiStackUrl: z.string().default("http://10.0.0.171:7000"),
+  telegramAudioEnabled: z.coerce.boolean().default(true),
+  telegramAudioReplyEnabled: z.coerce.boolean().default(true),
+  gx10SttTimeoutMs: z.coerce.number().int().positive().default(120_000),
+  gx10TtsTimeoutMs: z.coerce.number().int().positive().default(300_000),
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
@@ -57,5 +65,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxTelegramMessageLength: env.MAX_TELEGRAM_MESSAGE_LENGTH ?? "4096",
     telegramTypingEnabled: env.TELEGRAM_TYPING_ENABLED !== "false" && env.TELEGRAM_TYPING_ENABLED !== "0",
     telegramTypingRefreshMs: env.TELEGRAM_TYPING_REFRESH_MS ?? "4000",
+    telegramProgressEnabled: env.TELEGRAM_PROGRESS_ENABLED !== "false" && env.TELEGRAM_PROGRESS_ENABLED !== "0",
+    telegramProgressMinIntervalMs: env.TELEGRAM_PROGRESS_MIN_INTERVAL_MS ?? "2500",
+    telegramProgressHeartbeatMs: env.TELEGRAM_PROGRESS_HEARTBEAT_MS ?? "30000",
+    aiStackUrl: env.AI_STACK_URL ?? "http://10.0.0.171:7000",
+    telegramAudioEnabled: env.TELEGRAM_AUDIO_ENABLED !== "false" && env.TELEGRAM_AUDIO_ENABLED !== "0",
+    telegramAudioReplyEnabled:
+      env.TELEGRAM_AUDIO_REPLY_ENABLED !== "false" && env.TELEGRAM_AUDIO_REPLY_ENABLED !== "0",
+    gx10SttTimeoutMs: env.GX10_STT_TIMEOUT_MS ?? "120000",
+    gx10TtsTimeoutMs: env.GX10_TTS_TIMEOUT_MS ?? "300000",
   });
 }

@@ -1,28 +1,48 @@
 import type { TelegramInboundBody } from "../domain/messages.js";
 import type { TelegramUpdate } from "./telegram-client.js";
 
-export function normalizeTelegramUpdate(bridgeId: string, update: TelegramUpdate): TelegramInboundBody | null {
-  const receivedAt = new Date().toISOString();
+function baseInbound(bridgeId: string, update: TelegramUpdate, msg: NonNullable<TelegramUpdate["message"]>): TelegramInboundBody | null {
+  const chatType = msg.chat.type as TelegramInboundBody["chatType"];
+  if (!msg.from) return null;
+  return {
+    bridgeId,
+    telegramUpdateId: update.update_id,
+    telegramMessageId: msg.message_id,
+    userId: String(msg.from.id),
+    chatId: String(msg.chat.id),
+    chatType,
+    text: msg.text ?? null,
+    command: msg.text?.startsWith("/") ? msg.text.split(/\s+/)[0] ?? null : null,
+    replyToMessageId: msg.reply_to_message?.message_id ?? null,
+    receivedAt: new Date().toISOString(),
+    rawArtifactRef: null,
+    inputModality: "text",
+    voiceFileId: null,
+    caption: null,
+  };
+}
 
+export function normalizeTelegramUpdate(bridgeId: string, update: TelegramUpdate): TelegramInboundBody | null {
   if (update.message) {
     const msg = update.message;
-    const chatType = msg.chat.type as TelegramInboundBody["chatType"];
-    const text = msg.text ?? null;
-    const command = text?.startsWith("/") ? text.split(/\s+/)[0] ?? null : null;
-    if (!msg.from) return null;
-    return {
-      bridgeId,
-      telegramUpdateId: update.update_id,
-      telegramMessageId: msg.message_id,
-      userId: String(msg.from.id),
-      chatId: String(msg.chat.id),
-      chatType,
-      text,
-      command,
-      replyToMessageId: msg.reply_to_message?.message_id ?? null,
-      receivedAt,
-      rawArtifactRef: null,
-    };
+    const voice = msg.voice ?? msg.audio;
+    if (voice) {
+      const base = baseInbound(bridgeId, update, msg);
+      if (!base) return null;
+      return {
+        ...base,
+        text: null,
+        command: null,
+        inputModality: "voice",
+        voiceFileId: voice.file_id,
+        caption: msg.caption ?? null,
+      };
+    }
+
+    const base = baseInbound(bridgeId, update, msg);
+    if (!base) return null;
+    if (!base.text) return null;
+    return base;
   }
 
   if (update.callback_query?.message && update.callback_query.from) {
@@ -37,8 +57,11 @@ export function normalizeTelegramUpdate(bridgeId: string, update: TelegramUpdate
       text: cq.data ?? null,
       command: null,
       replyToMessageId: null,
-      receivedAt,
+      receivedAt: new Date().toISOString(),
       rawArtifactRef: null,
+      inputModality: "text",
+      voiceFileId: null,
+      caption: null,
     };
   }
 
@@ -63,4 +86,13 @@ export function interceptControlCommand(text: string | null): "status" | "help" 
   if (text === "/help") return "help";
   if (text.startsWith("/cancel")) return "cancel";
   return null;
+}
+
+export function formatVoiceTranscript(transcript: string, caption: string | null | undefined): string {
+  const body = transcript.trim();
+  const cap = caption?.trim();
+  if (cap) {
+    return `[voice] ${body}\n\n[caption] ${cap}`;
+  }
+  return `[voice] ${body}`;
 }

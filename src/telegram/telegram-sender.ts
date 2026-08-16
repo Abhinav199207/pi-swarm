@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { AppConfig } from "../config.js";
 import type { TelegramSendBody } from "../domain/messages.js";
 import { TelegramSendBodySchema } from "../domain/messages.js";
 import type { TelegramBridge } from "../domain/persona.js";
@@ -9,12 +10,14 @@ import { BridgeRepository } from "../persistence/repositories/bridge-repository.
 import { MessageRepository } from "../persistence/repositories/message-repository.js";
 import type { TelegramClient } from "./telegram-client.js";
 import { isTelegramApiError } from "./http-telegram-client.js";
+import { deliverTelegramOutbound } from "./telegram-voice-delivery.js";
 
 export class TelegramSender {
   constructor(
     private readonly bridgeId: string,
     private readonly client: TelegramClient,
     private readonly personaSlug: string,
+    private readonly config: AppConfig,
   ) {}
 
   async processOutboundMessage(messageId: string, body: Record<string, unknown>): Promise<void> {
@@ -29,7 +32,7 @@ export class TelegramSender {
     if (bridge.outboundPolicy === "disabled") {
       throw new Error("outbound disabled");
     }
-    if (parsed.reason !== "reply" && bridge.outboundPolicy === "replies_only") {
+    if (parsed.reason !== "reply" && parsed.reason !== "status" && bridge.outboundPolicy === "replies_only") {
       throw new Error("only reply reasons allowed");
     }
 
@@ -39,12 +42,7 @@ export class TelegramSender {
     if (count > 0) return;
 
     try {
-      const result = await this.client.sendMessage({
-        chatId: parsed.chatId,
-        text: parsed.text,
-        replyToMessageId: parsed.replyToMessageId ?? undefined,
-        parseMode: parsed.parseMode === "plain" ? undefined : parsed.parseMode,
-      });
+      const result = await deliverTelegramOutbound(this.client, parsed, this.config);
 
       await db.insert(outboundDeliveryReceipts).values({
         id: randomUUID(),
@@ -62,7 +60,7 @@ export class TelegramSender {
         bridgeId: bridge.id,
         eventType: "telegram.outbound_sent",
         actor: `persona:${this.personaSlug}`,
-        payload: { messageId, chatId: parsed.chatId },
+        payload: { messageId, chatId: parsed.chatId, delivery: result.delivery },
       });
     } catch (err) {
       const code = isTelegramApiError(err) ? err.kind : "unknown";

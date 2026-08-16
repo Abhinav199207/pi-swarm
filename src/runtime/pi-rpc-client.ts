@@ -32,6 +32,7 @@ export class PiRpcClient {
   private requestId = 0;
   private stderr = "";
   private exitError: Error | null = null;
+  private activityBump: (() => void) | null = null;
 
   constructor(private readonly options: PiRpcClientOptions) {}
 
@@ -117,15 +118,38 @@ export class PiRpcClient {
     }
   }
 
+  /** Reset the in-flight idle timer while a prompt is running (e.g. heartbeat). */
+  bumpActivity(): void {
+    this.activityBump?.();
+  }
+
+  async abort(): Promise<void> {
+    const response = await this.send({ type: "abort" });
+    if (!response.success) {
+      throw new Error(response.error ?? "abort failed");
+    }
+  }
+
   async waitForIdle(timeoutMs = this.options.idleTimeoutMs ?? 120_000): Promise<void> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        unsubscribe();
-        reject(new Error(`Pi RPC idle timeout after ${timeoutMs}ms. Stderr: ${this.stderr}`));
-      }, timeoutMs);
+      let timer: NodeJS.Timeout;
+      const bump = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          this.activityBump = null;
+          unsubscribe();
+          reject(new Error(`Pi RPC idle timeout after ${timeoutMs}ms. Stderr: ${this.stderr}`));
+        }, timeoutMs);
+      };
+
+      this.activityBump = bump;
+      bump();
+
       const unsubscribe = this.onEvent((event) => {
+        bump();
         if (event.type === "agent_settled") {
           clearTimeout(timer);
+          this.activityBump = null;
           unsubscribe();
           resolve();
         }
@@ -142,15 +166,24 @@ export class PiRpcClient {
     return data?.text ?? null;
   }
 
-  async promptAndGetReply(message: string, timeoutMs?: number): Promise<string> {
-    const idlePromise = this.waitForIdle(timeoutMs);
-    await this.prompt(message);
-    await idlePromise;
-    const text = await this.getLastAssistantText();
-    if (!text?.trim()) {
-      throw new Error("Pi RPC returned empty assistant text");
+  async promptAndGetReply(
+    message: string,
+    timeoutMs?: number,
+    onProgress?: (event: Record<string, unknown>) => void,
+  ): Promise<string> {
+    const unsubscribe = onProgress ? this.onEvent(onProgress) : undefined;
+    try {
+      const idlePromise = this.waitForIdle(timeoutMs);
+      await this.prompt(message);
+      await idlePromise;
+      const text = await this.getLastAssistantText();
+      if (!text?.trim()) {
+        throw new Error("Pi RPC returned empty assistant text");
+      }
+      return text.trim();
+    } finally {
+      unsubscribe?.();
     }
-    return text.trim();
   }
 
   private handleLine(line: string): void {
