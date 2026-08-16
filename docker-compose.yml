@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pi_swarm
+      POSTGRES_PASSWORD: pi_swarm
+      POSTGRES_DB: pi_swarm
+    ports:
+      - "5432:5432"
+    volumes:
+      - pi_swarm_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pi_swarm -d pi_swarm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pi_swarm_pg:

@@ -1,0 +1,17 @@
+[Unit]
+Description=Pi Swarm control plane
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=lenovo-docker
+WorkingDirectory=/home/lenovo-docker/pi-swarm
+EnvironmentFile=/home/lenovo-docker/pi-swarm/.env
+Environment=PERSONA_SLUGS=concierge,atlas-infra
+ExecStart=/tmp/node-v22.19.0-linux-x64/bin/node dist/app.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

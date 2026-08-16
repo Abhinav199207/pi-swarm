@@ -1,0 +1,89 @@
+import { randomUUID } from "node:crypto";
+import type { TelegramSendBody } from "../domain/messages.js";
+import { TelegramSendBodySchema } from "../domain/messages.js";
+import type { TelegramBridge } from "../domain/persona.js";
+import { getDb } from "../persistence/db.js";
+import { outboundDeliveryReceipts } from "../persistence/schema.js";
+import { AuditRepository } from "../persistence/repositories/audit-repository.js";
+import { BridgeRepository } from "../persistence/repositories/bridge-repository.js";
+import { MessageRepository } from "../persistence/repositories/message-repository.js";
+import type { TelegramClient } from "./telegram-client.js";
+import { isTelegramApiError } from "./http-telegram-client.js";
+
+export class TelegramSender {
+  constructor(
+    private readonly bridgeId: string,
+    private readonly client: TelegramClient,
+    private readonly personaSlug: string,
+  ) {}
+
+  async processOutboundMessage(messageId: string, body: Record<string, unknown>): Promise<void> {
+    const bridge = await loadActiveBridge(this.bridgeId);
+    const parsed = TelegramSendBodySchema.parse(body);
+    if (bridge.status !== "active") {
+      throw new Error("bridge not active");
+    }
+    if (!parsed.chatId || !bridge.allowedChatIds.includes(parsed.chatId)) {
+      throw new Error("chat not allowlisted");
+    }
+    if (bridge.outboundPolicy === "disabled") {
+      throw new Error("outbound disabled");
+    }
+    if (parsed.reason !== "reply" && bridge.outboundPolicy === "replies_only") {
+      throw new Error("only reply reasons allowed");
+    }
+
+    const db = getDb();
+    const messages = new MessageRepository(db);
+    const count = await messages.countByToAndIdempotency(`bridge:${bridge.id}`, `delivery:${messageId}`);
+    if (count > 0) return;
+
+    try {
+      const result = await this.client.sendMessage({
+        chatId: parsed.chatId,
+        text: parsed.text,
+        replyToMessageId: parsed.replyToMessageId ?? undefined,
+        parseMode: parsed.parseMode === "plain" ? undefined : parsed.parseMode,
+      });
+
+      await db.insert(outboundDeliveryReceipts).values({
+        id: randomUUID(),
+        messageId,
+        bridgeId: bridge.id,
+        telegramMessageId: result.messageId,
+        status: "sent",
+        errorCode: null,
+        errorMessage: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await new AuditRepository(db).record({
+        bridgeId: bridge.id,
+        eventType: "telegram.outbound_sent",
+        actor: `persona:${this.personaSlug}`,
+        payload: { messageId, chatId: parsed.chatId },
+      });
+    } catch (err) {
+      const code = isTelegramApiError(err) ? err.kind : "unknown";
+      await db.insert(outboundDeliveryReceipts).values({
+        id: randomUUID(),
+        messageId,
+        bridgeId: bridge.id,
+        telegramMessageId: null,
+        status: "failed",
+        errorCode: code,
+        errorMessage: err instanceof Error ? err.message : "send failed",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      throw err;
+    }
+  }
+}
+
+export async function loadActiveBridge(bridgeId: string): Promise<TelegramBridge> {
+  const bridge = await new BridgeRepository(getDb()).findById(bridgeId);
+  if (!bridge) throw new Error("bridge not found");
+  return bridge;
+}

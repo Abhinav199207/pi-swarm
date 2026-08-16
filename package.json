@@ -1,0 +1,36 @@
+{
+  "name": "pi-swarm",
+  "version": "0.1.0",
+  "description": "Pi Swarm: persistent personas with per-persona Telegram long polling",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/app.ts",
+    "start": "node dist/app.js",
+    "daemon": "tsx src/app.ts",
+    "cli": "tsx src/cli/persona-cli.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/persistence/migrate.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.1",
+    "drizzle-orm": "^0.44.4",
+    "pg": "^8.16.3",
+    "pino": "^9.9.0",
+    "zod": "^4.0.17"
+  },
+  "devDependencies": {
+    "@types/node": "^22.17.2",
+    "@types/pg": "^8.15.5",
+    "drizzle-kit": "^0.31.4",
+    "tsx": "^4.20.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

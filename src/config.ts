@@ -1,0 +1,61 @@
+import { z } from "zod";
+
+const ConfigSchema = z.object({
+  nodeEnv: z.enum(["development", "test", "production"]).default("development"),
+  databaseUrl: z.string().min(1),
+  logLevel: z.enum(["fatal", "error", "warn", "info", "debug", "trace"]).default("info"),
+  personaRuntimeRoot: z.string().default("./var/personas"),
+  piCommand: z.string().default("pi"),
+  piCliPath: z.string().optional(),
+  piProvider: z.string().optional(),
+  piModel: z.string().optional(),
+  piRpcTimeoutMs: z.coerce.number().int().positive().default(120_000),
+  useFakeWorker: z.coerce.boolean().default(false),
+  memoryProvider: z.enum(["fake", "remnic"]).default("remnic"),
+  remnicEndpoint: z.string().default("http://127.0.0.1:4318"),
+  remnicAuthToken: z.string().optional(),
+  remnicTimeoutMs: z.coerce.number().int().positive().default(8000),
+  memoryRecallMaxItems: z.coerce.number().int().min(1).max(20).default(8),
+  memoryRecallMaxChars: z.coerce.number().int().min(500).max(16000).default(6000),
+  memoryExtractionEnabled: z.coerce.boolean().default(true),
+  memoryExtractionRequireReview: z.coerce.boolean().default(false),
+  memoryCurationPollIntervalMs: z.coerce.number().int().positive().default(2000),
+  pollLongTimeoutSeconds: z.coerce.number().int().positive().default(30),
+  leaseTtlSeconds: z.coerce.number().int().positive().default(60),
+  leaseRenewIntervalSeconds: z.coerce.number().int().positive().default(20),
+  maxTelegramMessageLength: z.coerce.number().int().positive().default(4096),
+  telegramTypingEnabled: z.coerce.boolean().default(true),
+  telegramTypingRefreshMs: z.coerce.number().int().min(1000).max(10000).default(4000),
+});
+
+export type AppConfig = z.infer<typeof ConfigSchema>;
+
+export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
+  return ConfigSchema.parse({
+    nodeEnv: env.NODE_ENV ?? "development",
+    databaseUrl: env.DATABASE_URL,
+    logLevel: env.LOG_LEVEL ?? "info",
+    personaRuntimeRoot: env.PERSONA_RUNTIME_ROOT ?? "./var/personas",
+    piCommand: env.PI_COMMAND ?? "pi",
+    piCliPath: env.PI_CLI_PATH,
+    piProvider: env.PI_PROVIDER,
+    piModel: env.PI_MODEL,
+    piRpcTimeoutMs: env.PI_RPC_TIMEOUT_MS ?? "120000",
+    useFakeWorker: env.USE_FAKE_WORKER === "true" || env.USE_FAKE_WORKER === "1",
+    memoryProvider: env.MEMORY_PROVIDER === "fake" ? "fake" : "remnic",
+    remnicEndpoint: env.REMNIC_ENDPOINT ?? "http://127.0.0.1:4318",
+    remnicAuthToken: env.REMNIC_AUTH_TOKEN,
+    remnicTimeoutMs: env.REMNIC_TIMEOUT_MS ?? "8000",
+    memoryRecallMaxItems: env.MEMORY_RECALL_MAX_ITEMS ?? "8",
+    memoryRecallMaxChars: env.MEMORY_RECALL_MAX_CHARS ?? "6000",
+    memoryExtractionEnabled: env.MEMORY_EXTRACTION_ENABLED !== "false" && env.MEMORY_EXTRACTION_ENABLED !== "0",
+    memoryExtractionRequireReview: env.MEMORY_EXTRACTION_REQUIRE_REVIEW === "true" || env.MEMORY_EXTRACTION_REQUIRE_REVIEW === "1",
+    memoryCurationPollIntervalMs: env.MEMORY_CURATION_POLL_INTERVAL_MS ?? "2000",
+    pollLongTimeoutSeconds: env.POLL_LONG_TIMEOUT_SECONDS ?? "30",
+    leaseRenewIntervalSeconds: env.LEASE_RENEW_INTERVAL_SECONDS ?? "20",
+    leaseTtlSeconds: env.LEASE_TTL_SECONDS ?? "60",
+    maxTelegramMessageLength: env.MAX_TELEGRAM_MESSAGE_LENGTH ?? "4096",
+    telegramTypingEnabled: env.TELEGRAM_TYPING_ENABLED !== "false" && env.TELEGRAM_TYPING_ENABLED !== "0",
+    telegramTypingRefreshMs: env.TELEGRAM_TYPING_REFRESH_MS ?? "4000",
+  });
+}
