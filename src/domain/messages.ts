@@ -42,15 +42,26 @@ export const TelegramInboundBodySchema = z.object({
   caption: z.string().nullable().optional(),
 });
 
-export const TelegramSendBodySchema = z.object({
-  bridgeId: z.string().uuid(),
-  chatId: z.string(),
-  text: z.string().min(1).max(4096),
-  replyToMessageId: z.number().int().nullable(),
-  parseMode: z.enum(["MarkdownV2", "HTML", "plain"]).default("plain"),
-  reason: z.enum(["reply", "status", "approved_notification"]),
-  delivery: z.enum(["text", "voice"]).default("text"),
-});
+export const TelegramSendBodySchema = z
+  .object({
+    bridgeId: z.string().uuid(),
+    chatId: z.string(),
+    text: z.string().max(4096).default(""),
+    replyToMessageId: z.number().int().nullable(),
+    parseMode: z.enum(["MarkdownV2", "HTML", "plain"]).default("plain"),
+    reason: z.enum(["reply", "status", "approved_notification"]),
+    delivery: z.enum(["text", "voice", "audio", "video"]).default("text"),
+    mediaPath: z.string().min(1).optional(),
+    progressKey: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.delivery === "text" && !data.text.trim()) {
+      ctx.addIssue({ code: "custom", message: "text required for text delivery" });
+    }
+    if ((data.delivery === "audio" || data.delivery === "video") && !data.mediaPath) {
+      ctx.addIssue({ code: "custom", message: "mediaPath required for audio/video delivery" });
+    }
+  });
 
 export type AgentMessageKind = z.infer<typeof AgentMessageKindSchema>;
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;

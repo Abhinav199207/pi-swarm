@@ -11,6 +11,10 @@ import type { MemoryCandidateService } from "../control-plane/memory-curation-se
 import { CONCIERGE_MEMORY_EXTRA, MEMORY_RULES_BLOCK } from "../memory/memory-runtime.js";
 import { getLogger } from "../observability/logger.js";
 import {
+  buildTelegramSendBodies,
+  parseReplyForOutbound,
+} from "../telegram/telegram-media-parse.js";
+import {
   createProgressFormatState,
   formatPiRpcProgress,
   isPriorityProgressEvent,
@@ -192,20 +196,24 @@ export class PiRpcWorker implements PersonaWorker {
         this.config.telegramAudioReplyEnabled &&
         this.config.telegramAudioEnabled &&
         body.inputModality === "voice";
-      return [
+      const parts = parseReplyForOutbound(
+        reply.slice(0, this.config.maxTelegramMessageLength),
+        { voiceTts: voiceReply },
+      );
+      const sendBodies = buildTelegramSendBodies(
         {
-          type: "telegram.send",
-          body: {
-            bridgeId: body.bridgeId,
-            chatId: body.chatId,
-            text: reply.slice(0, this.config.maxTelegramMessageLength),
-            replyToMessageId: body.telegramMessageId,
-            parseMode: "plain",
-            reason: "reply",
-            delivery: voiceReply ? "voice" : "text",
-          },
+          bridgeId: body.bridgeId,
+          chatId: body.chatId,
+          replyToMessageId: body.telegramMessageId,
+          parseMode: "plain",
+          reason: "reply",
         },
-      ];
+        parts,
+      );
+      return sendBodies.map((sendBody) => ({
+        type: "telegram.send" as const,
+        body: sendBody,
+      }));
     } catch (err) {
       await this.abortPromptIfRunning();
       const errorText = err instanceof Error ? err.message : String(err);
@@ -359,6 +367,8 @@ function buildTelegramPrompt(
     fromVoice
       ? "The user sent a voice note via Telegram (transcribed below). Reply in plain spoken language suitable for a voice note reply."
       : "The user sent this message via Telegram.",
+    "To deliver audio or video (including Telegram channels), include a line with MEDIA:/absolute/or/relative/path.ext in your reply.",
+    "Supported media: .mp4/.mov/.webm (video), .mp3/.wav/.m4a (audio), .ogg/.opus (voice note).",
     "Keep the response concise unless they ask for detail.",
     "",
     `User message: ${text}`,

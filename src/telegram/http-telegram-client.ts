@@ -1,5 +1,10 @@
 import type { TelegramClient, TelegramUpdate } from "./telegram-client.js";
 import { TelegramApiError, classifyTelegramError } from "./telegram-client.js";
+import {
+  basenameForPath,
+  buildMultipartBody,
+  mimeForPath,
+} from "./telegram-multipart.js";
 
 const API_BASE = "https://api.telegram.org";
 
@@ -18,6 +23,28 @@ export class HttpTelegramClient implements TelegramClient {
       throw classifyTelegramError(res.status, json.description ?? "Telegram API error");
     }
     return json.result as T;
+  }
+
+  private async sendMultipart(
+    method: string,
+    fields: Record<string, string>,
+    fileField: string,
+    fileBuffer: Buffer,
+    filename: string,
+  ): Promise<{ messageId: number }> {
+    const mime = mimeForPath(filename);
+    const { body, boundary } = buildMultipartBody(fields, fileField, fileBuffer, filename, mime);
+    const url = `${API_BASE}/bot${this.token}/${method}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
+      body,
+    });
+    const json = (await res.json()) as { ok: boolean; result?: { message_id: number }; description?: string };
+    if (!json.ok) {
+      throw classifyTelegramError(res.status, json.description ?? `Telegram ${method} failed`);
+    }
+    return { messageId: json.result!.message_id };
   }
 
   async getMe() {
@@ -60,45 +87,48 @@ export class HttpTelegramClient implements TelegramClient {
     replyToMessageId?: number;
     caption?: string;
   }) {
-    const boundary = `----PiTelegramVoice${Date.now()}`;
-    const parts: Buffer[] = [];
-    const appendField = (name: string, value: string) => {
-      parts.push(
-        Buffer.from(
-          `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
-          "utf8",
-        ),
-      );
-    };
-    appendField("chat_id", input.chatId);
+    const fields: Record<string, string> = { chat_id: input.chatId };
     if (input.replyToMessageId != null) {
-      appendField("reply_to_message_id", String(input.replyToMessageId));
+      fields.reply_to_message_id = String(input.replyToMessageId);
     }
     if (input.caption?.trim()) {
-      appendField("caption", input.caption.slice(0, 1024));
+      fields.caption = input.caption.slice(0, 1024);
     }
-    const mime = input.filename.endsWith(".ogg") ? "audio/ogg" : "audio/wav";
-    parts.push(
-      Buffer.from(
-        `--${boundary}\r\nContent-Disposition: form-data; name="voice"; filename="${input.filename}"\r\nContent-Type: ${mime}\r\n\r\n`,
-        "utf8",
-      ),
-    );
-    parts.push(input.voice);
-    parts.push(Buffer.from(`\r\n--${boundary}--\r\n`, "utf8"));
-    const body = Buffer.concat(parts);
+    return this.sendMultipart("sendVoice", fields, "voice", input.voice, input.filename);
+  }
 
-    const url = `${API_BASE}/bot${this.token}/sendVoice`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
-      body,
-    });
-    const json = (await res.json()) as { ok: boolean; result?: { message_id: number }; description?: string };
-    if (!json.ok) {
-      throw classifyTelegramError(res.status, json.description ?? "Telegram sendVoice failed");
+  async sendAudio(input: {
+    chatId: string;
+    audio: Buffer;
+    filename: string;
+    replyToMessageId?: number;
+    caption?: string;
+  }) {
+    const fields: Record<string, string> = { chat_id: input.chatId };
+    if (input.replyToMessageId != null) {
+      fields.reply_to_message_id = String(input.replyToMessageId);
     }
-    return { messageId: json.result!.message_id };
+    if (input.caption?.trim()) {
+      fields.caption = input.caption.slice(0, 1024);
+    }
+    return this.sendMultipart("sendAudio", fields, "audio", input.audio, input.filename);
+  }
+
+  async sendVideo(input: {
+    chatId: string;
+    video: Buffer;
+    filename: string;
+    replyToMessageId?: number;
+    caption?: string;
+  }) {
+    const fields: Record<string, string> = { chat_id: input.chatId };
+    if (input.replyToMessageId != null) {
+      fields.reply_to_message_id = String(input.replyToMessageId);
+    }
+    if (input.caption?.trim()) {
+      fields.caption = input.caption.slice(0, 1024);
+    }
+    return this.sendMultipart("sendVideo", fields, "video", input.video, input.filename);
   }
 
   async downloadFile(fileId: string): Promise<{ buffer: Buffer; filename: string }> {
@@ -112,11 +142,14 @@ export class HttpTelegramClient implements TelegramClient {
       throw new Error(`Telegram file download failed: HTTP ${res.status}`);
     }
     const buffer = Buffer.from(await res.arrayBuffer());
-    const filename = file.file_path.split("/").pop() ?? "voice.ogg";
+    const filename = basenameForPath(file.file_path);
     return { buffer, filename };
   }
 
-  async sendChatAction(input: { chatId: string; action: "typing" | "record_voice" }) {
+  async sendChatAction(input: {
+    chatId: string;
+    action: "typing" | "record_voice" | "upload_video";
+  }) {
     await this.call<boolean>("sendChatAction", {
       chat_id: input.chatId,
       action: input.action,
@@ -126,8 +159,10 @@ export class HttpTelegramClient implements TelegramClient {
 
 export class FakeTelegramClient implements TelegramClient {
   sent: Array<{ chatId: string; text: string; replyToMessageId?: number }> = [];
-  voices: Array<{ chatId: string; filename: string; replyToMessageId?: number }> = [];
-  chatActions: Array<{ chatId: string; action: "typing" | "record_voice" }> = [];
+  voices: Array<{ chatId: string; filename: string; replyToMessageId?: number; caption?: string }> = [];
+  audios: Array<{ chatId: string; filename: string; replyToMessageId?: number; caption?: string }> = [];
+  videos: Array<{ chatId: string; filename: string; replyToMessageId?: number; caption?: string }> = [];
+  chatActions: Array<{ chatId: string; action: "typing" | "record_voice" | "upload_video" }> = [];
   updates: TelegramUpdate[] = [];
   webhookUrl = "";
   me = { id: "999", username: "fake_bot" };
@@ -156,13 +191,47 @@ export class FakeTelegramClient implements TelegramClient {
     voice: Buffer;
     filename: string;
     replyToMessageId?: number;
+    caption?: string;
   }) {
     this.voices.push({
       chatId: input.chatId,
       filename: input.filename,
       replyToMessageId: input.replyToMessageId,
+      caption: input.caption,
     });
     return { messageId: this.sent.length + this.voices.length };
+  }
+
+  async sendAudio(input: {
+    chatId: string;
+    audio: Buffer;
+    filename: string;
+    replyToMessageId?: number;
+    caption?: string;
+  }) {
+    this.audios.push({
+      chatId: input.chatId,
+      filename: input.filename,
+      replyToMessageId: input.replyToMessageId,
+      caption: input.caption,
+    });
+    return { messageId: this.sent.length + this.voices.length + this.audios.length };
+  }
+
+  async sendVideo(input: {
+    chatId: string;
+    video: Buffer;
+    filename: string;
+    replyToMessageId?: number;
+    caption?: string;
+  }) {
+    this.videos.push({
+      chatId: input.chatId,
+      filename: input.filename,
+      replyToMessageId: input.replyToMessageId,
+      caption: input.caption,
+    });
+    return { messageId: this.sent.length + this.voices.length + this.audios.length + this.videos.length };
   }
 
   async downloadFile(fileId: string) {
@@ -173,7 +242,7 @@ export class FakeTelegramClient implements TelegramClient {
     return { buffer, filename: `${fileId}.ogg` };
   }
 
-  async sendChatAction(input: { chatId: string; action: "typing" | "record_voice" }) {
+  async sendChatAction(input: { chatId: string; action: "typing" | "record_voice" | "upload_video" }) {
     this.chatActions.push(input);
   }
 

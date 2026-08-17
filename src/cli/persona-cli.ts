@@ -13,7 +13,7 @@ import { PostgresMessageBus } from "../messaging/postgres-message-bus.js";
 function usage(): never {
   console.log(`Usage:
   npm run cli -- persona create --slug <slug> --name <name> --role <role> --prompt <ref> --memory <ns> --workspace <path> --tools <profile> --model <profile> [--kind concierge|persistent_persona]
-  npm run cli -- persona telegram-enable --persona <slug> --token-secret <ref> --allow-user <id> --allow-chat <id> [--outbound replies_only|disabled|allowlisted_only]
+  npm run cli -- persona telegram-enable --persona <slug> --token-secret <ref> --allow-user <id> --allow-chat <id> [--allow-group-chats] [--outbound replies_only|disabled|allowlisted_only]
   npm run cli -- persona start <slug>
   npm run cli -- persona stop <slug> [--reason text]
   npm run cli -- persona status <slug>
@@ -95,6 +95,7 @@ async function main() {
       tokenSecretRef: requireArg("--token-secret"),
       allowedUserIds: [requireArg("--allow-user")],
       allowedChatIds: [requireArg("--allow-chat")],
+      allowGroupChats: process.argv.includes("--allow-group-chats"),
       outboundPolicy: (arg("--outbound") ?? "replies_only") as "disabled" | "replies_only" | "allowlisted_only",
     });
     console.log(JSON.stringify(bridge, null, 2));

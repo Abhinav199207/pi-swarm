@@ -170,8 +170,8 @@ export class PersonaSupervisor {
         worker?.handleInboxMessage != null
           ? await worker.handleInboxMessage(persona, message, emit)
           : processInboxMessage(persona, message);
-      for (const event of events) {
-        await this.handleWorkerEvent(persona, bridge, bus, event, message.traceId, message.id);
+      for (const [index, event] of events.entries()) {
+        await this.handleWorkerEvent(persona, bridge, bus, event, message.traceId, message.id, index);
       }
     } finally {
       typing?.stop();
@@ -198,6 +198,7 @@ export class PersonaSupervisor {
     event: PersonaWorkerEvent,
     traceId?: string,
     parentMessageId?: string,
+    sendPartIndex = 0,
   ): Promise<void> {
     if (event.type === "status") {
       getLogger().info({ slug: persona.slug, message: event.message }, "persona status");
@@ -223,7 +224,10 @@ export class PersonaSupervisor {
         kind: "telegram.send",
         body: event.body,
         idempotencyKey:
-          progressKey ?? (parentId && reason === "reply" ? `reply:${parentId}` : randomUUID()),
+          progressKey ??
+          (parentId && reason === "reply"
+            ? `reply:${parentId}:${sendPartIndex}`
+            : randomUUID()),
         expiresAt: null,
       });
     }

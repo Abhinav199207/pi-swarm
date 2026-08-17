@@ -10,7 +10,7 @@ import { BridgeRepository } from "../persistence/repositories/bridge-repository.
 import { MessageRepository } from "../persistence/repositories/message-repository.js";
 import type { TelegramClient } from "./telegram-client.js";
 import { isTelegramApiError } from "./http-telegram-client.js";
-import { deliverTelegramOutbound } from "./telegram-voice-delivery.js";
+import { deliverTelegramOutbound } from "./telegram-media-delivery.js";
 
 export class TelegramSender {
   constructor(

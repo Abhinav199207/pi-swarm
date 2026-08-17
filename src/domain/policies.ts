@@ -8,9 +8,11 @@ export function authorizeTelegramUser(input: {
   chatId: string;
   chatType: "private" | "group" | "supergroup" | "channel";
 }): boolean {
-  return (
-    input.allowedUserIds.includes(input.userId) &&
-    input.allowedChatIds.includes(input.chatId) &&
-    (input.allowGroupChats || input.chatType === "private")
-  );
+  if (!input.allowedUserIds.includes(input.userId) || !input.allowedChatIds.includes(input.chatId)) {
+    return false;
+  }
+  if (input.chatType === "private") {
+    return true;
+  }
+  return input.allowGroupChats;
 }

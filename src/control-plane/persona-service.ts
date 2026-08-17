@@ -93,7 +93,9 @@ export class BridgeService {
       allowedUserIds: input.allowedUserIds,
       allowedChatIds: input.allowedChatIds,
       allowGroupChats: input.allowGroupChats ?? false,
-      allowedUpdateTypes: ["message", "callback_query"],
+      allowedUpdateTypes: input.allowGroupChats
+        ? ["message", "callback_query", "channel_post"]
+        : ["message", "callback_query"],
       outboundPolicy: input.outboundPolicy,
     });
 

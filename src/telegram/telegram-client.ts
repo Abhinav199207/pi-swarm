@@ -18,6 +18,17 @@ export interface TelegramUpdate {
     from?: { id: number; username?: string };
     reply_to_message?: { message_id: number };
   };
+  channel_post?: {
+    message_id: number;
+    text?: string;
+    caption?: string;
+    voice?: TelegramVoiceAttachment;
+    audio?: TelegramVoiceAttachment;
+    video?: { file_id: string };
+    chat: { id: number; type: string };
+    from?: { id: number; username?: string };
+    sender_chat?: { id: number; type: string; title?: string };
+  };
   callback_query?: {
     id: string;
     from: { id: number };
@@ -47,8 +58,25 @@ export interface TelegramClient {
     replyToMessageId?: number;
     caption?: string;
   }): Promise<{ messageId: number }>;
+  sendAudio(input: {
+    chatId: string;
+    audio: Buffer;
+    filename: string;
+    replyToMessageId?: number;
+    caption?: string;
+  }): Promise<{ messageId: number }>;
+  sendVideo(input: {
+    chatId: string;
+    video: Buffer;
+    filename: string;
+    replyToMessageId?: number;
+    caption?: string;
+  }): Promise<{ messageId: number }>;
   downloadFile(fileId: string): Promise<{ buffer: Buffer; filename: string }>;
-  sendChatAction(input: { chatId: string; action: "typing" | "record_voice" }): Promise<void>;
+  sendChatAction(input: {
+    chatId: string;
+    action: "typing" | "record_voice" | "upload_video";
+  }): Promise<void>;
 }
 
 export type TelegramErrorKind = "auth" | "rate_limit" | "conflict" | "transient" | "validation";

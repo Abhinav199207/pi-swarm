@@ -1,19 +1,25 @@
 import type { TelegramInboundBody } from "../domain/messages.js";
 import type { TelegramUpdate } from "./telegram-client.js";
 
-function baseInbound(bridgeId: string, update: TelegramUpdate, msg: NonNullable<TelegramUpdate["message"]>): TelegramInboundBody | null {
+type TelegramMessage = NonNullable<TelegramUpdate["message"]>;
+
+function baseInbound(
+  bridgeId: string,
+  update: TelegramUpdate,
+  msg: TelegramMessage | NonNullable<TelegramUpdate["channel_post"]>,
+  userId: string,
+): TelegramInboundBody | null {
   const chatType = msg.chat.type as TelegramInboundBody["chatType"];
-  if (!msg.from) return null;
   return {
     bridgeId,
     telegramUpdateId: update.update_id,
     telegramMessageId: msg.message_id,
-    userId: String(msg.from.id),
+    userId,
     chatId: String(msg.chat.id),
     chatType,
     text: msg.text ?? null,
     command: msg.text?.startsWith("/") ? msg.text.split(/\s+/)[0] ?? null : null,
-    replyToMessageId: msg.reply_to_message?.message_id ?? null,
+    replyToMessageId: "reply_to_message" in msg ? msg.reply_to_message?.message_id ?? null : null,
     receivedAt: new Date().toISOString(),
     rawArtifactRef: null,
     inputModality: "text",
@@ -22,27 +28,69 @@ function baseInbound(bridgeId: string, update: TelegramUpdate, msg: NonNullable<
   };
 }
 
+function inboundFromMessage(
+  bridgeId: string,
+  update: TelegramUpdate,
+  msg: TelegramMessage,
+): TelegramInboundBody | null {
+  if (!msg.from) return null;
+  const voice = msg.voice ?? msg.audio;
+  if (voice) {
+    const base = baseInbound(bridgeId, update, msg, String(msg.from.id));
+    if (!base) return null;
+    return {
+      ...base,
+      text: null,
+      command: null,
+      inputModality: "voice",
+      voiceFileId: voice.file_id,
+      caption: msg.caption ?? null,
+    };
+  }
+
+  const base = baseInbound(bridgeId, update, msg, String(msg.from.id));
+  if (!base) return null;
+  if (!base.text) return null;
+  return base;
+}
+
+function inboundFromChannelPost(
+  bridgeId: string,
+  update: TelegramUpdate,
+  msg: NonNullable<TelegramUpdate["channel_post"]>,
+): TelegramInboundBody | null {
+  const userId = msg.from
+    ? String(msg.from.id)
+    : msg.sender_chat
+      ? String(msg.sender_chat.id)
+      : null;
+  if (!userId) return null;
+
+  const voice = msg.voice ?? msg.audio;
+  if (voice) {
+    const base = baseInbound(bridgeId, update, msg, userId);
+    return {
+      ...base!,
+      text: null,
+      command: null,
+      inputModality: "voice",
+      voiceFileId: voice.file_id,
+      caption: msg.caption ?? null,
+    };
+  }
+
+  const base = baseInbound(bridgeId, update, msg, userId);
+  if (!base?.text) return null;
+  return base;
+}
+
 export function normalizeTelegramUpdate(bridgeId: string, update: TelegramUpdate): TelegramInboundBody | null {
   if (update.message) {
-    const msg = update.message;
-    const voice = msg.voice ?? msg.audio;
-    if (voice) {
-      const base = baseInbound(bridgeId, update, msg);
-      if (!base) return null;
-      return {
-        ...base,
-        text: null,
-        command: null,
-        inputModality: "voice",
-        voiceFileId: voice.file_id,
-        caption: msg.caption ?? null,
-      };
-    }
+    return inboundFromMessage(bridgeId, update, update.message);
+  }
 
-    const base = baseInbound(bridgeId, update, msg);
-    if (!base) return null;
-    if (!base.text) return null;
-    return base;
+  if (update.channel_post) {
+    return inboundFromChannelPost(bridgeId, update, update.channel_post);
   }
 
   if (update.callback_query?.message && update.callback_query.from) {

@@ -53,7 +53,7 @@ export const TelegramBridgeSchema = z.object({
   allowedUserIds: z.array(z.string()).min(1),
   allowedChatIds: z.array(z.string()).min(1),
   allowGroupChats: z.boolean().default(false),
-  allowedUpdateTypes: z.array(z.enum(["message", "callback_query"])),
+  allowedUpdateTypes: z.array(z.enum(["message", "callback_query", "channel_post"])),
   outboundPolicy: z.enum(["disabled", "replies_only", "allowlisted_only"]),
   lastCommittedUpdateId: z.number().int().nullable(),
   leaseEpoch: z.number().int().nonnegative(),
