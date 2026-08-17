@@ -47,6 +47,7 @@ npm run cli -- persona telegram-enable \
   --token-secret env://TELEGRAM_CONCIERGE_TOKEN \
   --allow-user 123456789 \
   --allow-chat 123456789 \
+  --allow-group-chats \
   --outbound replies_only
 
 npm run cli -- persona start concierge
@@ -68,6 +69,27 @@ telegram-poller  ──► Postgres inbox (agent_messages)
 telegram-sender  ◄── outbox intents (telegram.send)
 ```
 
+## Telegram media delivery
+
+Personas can send **video, audio, and voice notes** outbound via `MEDIA:` markers in replies:
+
+```text
+Here is the clip.
+MEDIA:/home/lenovo-docker/pi-swarm/workspaces/concierge/render.mp4
+```
+
+| Extension | Telegram API |
+|-----------|--------------|
+| `.mp4`, `.mov`, `.webm`, `.mkv`, `.avi` | `sendVideo` |
+| `.mp3`, `.wav`, `.m4a`, `.flac`, `.aac` | `sendAudio` |
+| `.ogg`, `.opus` | `sendVoice` |
+
+**Channels and groups:** pass `--allow-group-chats` to `persona telegram-enable` and include the channel chat ID (`-100…`) in `--allow-chat`. The bot must be a channel admin with **Post Messages**.
+
+**TTS voice replies** still require the user to send a voice note first (`inputModality === "voice"`).
+
+Live deploy on Lenovo: pull `github-projects/pi-swarm` → sync to `~/pi-swarm` → `npm run build` → restart daemon (`homelab-deploy/deploy_pi_swarm_media_lenovo.py`).
+
 ## Milestone status
 
 - [x] Project scaffold, domain schemas, Postgres schema
@@ -79,6 +101,7 @@ telegram-sender  ◄── outbox intents (telegram.send)
 - [x] Pi RPC worker wired to real Pi RPC process (Telegram → LLM → reply)
 - [x] Remnic memory plane: scoped recall, curation worker, grants, audit
 - [x] Telegram typing indicator during LLM replies (`sendChatAction`)
+- [x] Telegram outbound video/audio/voice via `MEDIA:` markers + channel support
 - [ ] Full integration tests with fake Telegram + Postgres
 
 ## Related
