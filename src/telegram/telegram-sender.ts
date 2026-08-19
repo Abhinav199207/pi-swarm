@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
 import type { AppConfig } from "../config.js";
 import type { TelegramSendBody } from "../domain/messages.js";
 import { TelegramSendBodySchema } from "../domain/messages.js";
@@ -7,7 +8,6 @@ import { getDb } from "../persistence/db.js";
 import { outboundDeliveryReceipts } from "../persistence/schema.js";
 import { AuditRepository } from "../persistence/repositories/audit-repository.js";
 import { BridgeRepository } from "../persistence/repositories/bridge-repository.js";
-import { MessageRepository } from "../persistence/repositories/message-repository.js";
 import type { TelegramClient } from "./telegram-client.js";
 import { isTelegramApiError } from "./http-telegram-client.js";
 import { deliverTelegramOutbound } from "./telegram-media-delivery.js";
@@ -37,24 +37,30 @@ export class TelegramSender {
     }
 
     const db = getDb();
-    const messages = new MessageRepository(db);
-    const count = await messages.countByToAndIdempotency(`bridge:${bridge.id}`, `delivery:${messageId}`);
-    if (count > 0) return;
+    const existingReceipt = await db
+      .select({ messageId: outboundDeliveryReceipts.messageId })
+      .from(outboundDeliveryReceipts)
+      .where(eq(outboundDeliveryReceipts.messageId, messageId))
+      .limit(1);
+    if (existingReceipt.length > 0) return;
 
     try {
       const result = await deliverTelegramOutbound(this.client, parsed, this.config);
 
-      await db.insert(outboundDeliveryReceipts).values({
-        id: randomUUID(),
-        messageId,
-        bridgeId: bridge.id,
-        telegramMessageId: result.messageId,
-        status: "sent",
-        errorCode: null,
-        errorMessage: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      await db
+        .insert(outboundDeliveryReceipts)
+        .values({
+          id: randomUUID(),
+          messageId,
+          bridgeId: bridge.id,
+          telegramMessageId: result.messageId,
+          status: "sent",
+          errorCode: null,
+          errorMessage: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .onConflictDoNothing({ target: outboundDeliveryReceipts.messageId });
 
       await new AuditRepository(db).record({
         bridgeId: bridge.id,
@@ -64,17 +70,20 @@ export class TelegramSender {
       });
     } catch (err) {
       const code = isTelegramApiError(err) ? err.kind : "unknown";
-      await db.insert(outboundDeliveryReceipts).values({
-        id: randomUUID(),
-        messageId,
-        bridgeId: bridge.id,
-        telegramMessageId: null,
-        status: "failed",
-        errorCode: code,
-        errorMessage: err instanceof Error ? err.message : "send failed",
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      await db
+        .insert(outboundDeliveryReceipts)
+        .values({
+          id: randomUUID(),
+          messageId,
+          bridgeId: bridge.id,
+          telegramMessageId: null,
+          status: "failed",
+          errorCode: code,
+          errorMessage: err instanceof Error ? err.message : "send failed",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .onConflictDoNothing({ target: outboundDeliveryReceipts.messageId });
       throw err;
     }
   }
